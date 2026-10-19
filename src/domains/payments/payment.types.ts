@@ -92,6 +92,16 @@ export interface TipResponse {
   fromUserId: string;
   creatorId: string;
   amount: number;
+  currency?: string;
+  currencyCode?: string;
+  currencySymbol?: string;
+  formattedAmount?: string;
+  exchangeRate?: number | null;
+  exchangeRateInfo?: {
+    fromCurrency: string;
+    toCurrency: string;
+    rate: number;
+  } | null;
   message: string | null;
   status: TipStatusType;
   transactionHash: string | null;

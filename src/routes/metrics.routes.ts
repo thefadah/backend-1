@@ -6,11 +6,12 @@ import { getPrismaPerformanceMonitor } from '../db/prisma-performance';
 import { getCircuitBreakerSnapshots, syncCircuitBreakerMetrics } from '../lib/circuit-breaker';
 import { registerRequestMetrics } from '../plugins/requestMetrics';
 import { registerRequestMetricsRoutes } from './requestMetrics.routes';
+import { MONITORING_PATHS } from '../config/rate-limit';
 
 export const registerMetricsRoute = (app: FastifyInstance, prisma: PrismaClient): void => {
   // GET /metrics - Prometheus metrics endpoint
   app.get(
-    '/metrics',
+    MONITORING_PATHS.metrics,
     {
       schema: {
         tags: ['Metrics'],
@@ -39,7 +40,7 @@ export const registerMetricsRoute = (app: FastifyInstance, prisma: PrismaClient)
 
   // GET /metrics/json - JSON metrics endpoint (alternative)
   app.get(
-    '/metrics/json',
+    MONITORING_PATHS.metricsJson,
     {
       schema: {
         tags: ['Metrics'],

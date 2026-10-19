@@ -16,6 +16,7 @@ import {
   RefundResponse,
   WebhookResult,
 } from './charge.types';
+import { buildMultiCurrencyDetails } from './currency.utils';
 
 export interface ChargeServiceOptions {
   provider?: PaymentProvider;
@@ -367,6 +368,7 @@ export class ChargeService extends BaseService {
     updatedAt: Date;
     refunds?: Array<{ amount: number; status?: string }>;
   }): PaymentResponse {
+    const currencyDetails = buildMultiCurrencyDetails(payment.amount, payment.currency);
     return {
       id: payment.id,
       userId: payment.userId,
@@ -375,7 +377,12 @@ export class ChargeService extends BaseService {
       providerRef: payment.providerRef ?? null,
       method: payment.method as PaymentResponse['method'],
       amount: payment.amount,
-      currency: payment.currency,
+      currency: currencyDetails.currency,
+      currencyCode: currencyDetails.currencyCode,
+      currencySymbol: currencyDetails.currencySymbol,
+      formattedAmount: currencyDetails.formattedAmount,
+      exchangeRate: currencyDetails.exchangeRate,
+      exchangeRateInfo: currencyDetails.exchangeRateInfo,
       status: payment.status as PaymentStatus,
       description: payment.description ?? null,
       refundedAmount: this.sumRefunded(payment.refunds ?? []),
@@ -394,11 +401,17 @@ export class ChargeService extends BaseService {
     providerRef?: string | null;
     createdAt: Date;
   }): RefundResponse {
+    const currencyDetails = buildMultiCurrencyDetails(refund.amount, refund.currency);
     return {
       id: refund.id,
       paymentId: refund.paymentId,
       amount: refund.amount,
-      currency: refund.currency,
+      currency: currencyDetails.currency,
+      currencyCode: currencyDetails.currencyCode,
+      currencySymbol: currencyDetails.currencySymbol,
+      formattedAmount: currencyDetails.formattedAmount,
+      exchangeRate: currencyDetails.exchangeRate,
+      exchangeRateInfo: currencyDetails.exchangeRateInfo,
       status: refund.status,
       reason: refund.reason ?? null,
       providerRef: refund.providerRef ?? null,

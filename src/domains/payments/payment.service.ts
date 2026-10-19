@@ -8,6 +8,7 @@ import {
   BuildTransactionResponse,
   SubmitTransactionResponse,
 } from './payment.types';
+import { buildMultiCurrencyDetails } from './currency.utils';
 import {
   ValidationError,
   NotFoundError,
@@ -1403,11 +1404,20 @@ export class PaymentService extends BaseService {
     },
     timezone?: string
   ): TipResponse {
+    const currency = tip.assetCode ?? 'USDC';
+    const currencyDetails = buildMultiCurrencyDetails(tip.amount, currency);
+
     return {
       id: tip.id,
       fromUserId: tip.fromUserId,
       creatorId: tip.creatorId,
       amount: tip.amount,
+      currency: currencyDetails.currency,
+      currencyCode: currencyDetails.currencyCode,
+      currencySymbol: currencyDetails.currencySymbol,
+      formattedAmount: currencyDetails.formattedAmount,
+      exchangeRate: currencyDetails.exchangeRate,
+      exchangeRateInfo: currencyDetails.exchangeRateInfo,
       message: tip.message,
       status: tip.status as TipResponse['status'],
       transactionHash: tip.transactionHash || null,

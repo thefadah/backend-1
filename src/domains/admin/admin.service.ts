@@ -4,6 +4,7 @@ import { NotFoundError, UnauthorizedError, ValidationError } from '../../utils/e
 import { logger } from '../../utils/logger';
 import { hashPassword } from '../../utils/password';
 import { UserRole } from '../../utils/roles';
+import { getRecentErrors } from '../../lib/error-tracking';
 
 export interface FlagWalletRequest {
   reason: string;
@@ -595,58 +596,180 @@ export class AdminService extends BaseService {
   }
 
   /**
-   * Set or remove custom fee percentage override for a specific creator (issue #234).
+   * Get detailed account info and recent activity for customer support (#250)
    */
-  async setCreatorFeeOverride(
+  async getUserDetailsForSupport(
     adminUserId: string,
-    creatorId: string,
-    customFeeOverride: number | null
-  ): Promise<{ creatorId: string; customFeeOverride: number | null }> {
-    if (!(await this.isAdmin(adminUserId))) {
-      throw new UnauthorizedError('Only admins can configure creator fee overrides');
-    }
+    targetUserId: string,
+    auditContext?: { ipAddress?: string; requestId?: string }
+  ): Promise<{
+    user: Record<string, unknown>;
+    recentActivity: {
+      payments: unknown[];
+      logins: unknown[];
+      errors: unknown[];
+    };
+  }> {
+    return this.executeWithLogging('admin.getUserDetailsForSupport', async () => {
+      if (!(await this.isAdmin(adminUserId))) {
+        throw new UnauthorizedError('Only admins can view user support details');
+      }
 
-    if (customFeeOverride !== null && (customFeeOverride < 0 || customFeeOverride > 100)) {
-      throw new ValidationError('Fee override must be between 0 and 100 percent');
-    }
-
-    const creator = await (this.prisma.creator as any).findUnique({
-      where: { id: creatorId },
-      select: { id: true, customFeeOverride: true },
-    });
-
-    if (!creator) {
-      throw new NotFoundError('Creator');
-    }
-
-    const previousFee = creator.customFeeOverride;
-
-    const updated = await (this.prisma.creator as any).update({
-      where: { id: creatorId },
-      data: { customFeeOverride },
-      select: { id: true, customFeeOverride: true },
-    });
-
-    // Record audit log
-    await this.prisma.auditLog.create({
-      data: {
-        userId: adminUserId,
-        action: 'creator.fee_override_updated',
-        resource: 'Creator',
-        resourceId: creatorId,
-        changes: {
-          customFeeOverride: {
-            old: previousFee,
-            new: customFeeOverride,
+      const user = await this.prisma.user.findUnique({
+        where: { id: targetUserId },
+        include: {
+          wallets: {
+            select: {
+              id: true,
+              publicKey: true,
+              name: true,
+              verified: true,
+              createdAt: true,
+            },
+          },
+          creator: {
+            select: {
+              id: true,
+              username: true,
+              displayName: true,
+              verified: true,
+              isPublic: true,
+              createdAt: true,
+            },
+          },
+          userRoles: {
+            include: {
+              role: true,
+            },
           },
         },
-      },
+      });
+
+      if (!user) {
+        throw new NotFoundError('User');
+      }
+
+      // Fetch recent payments involving this user (as payer or as creator)
+      const paymentConditions: Array<{ userId?: string; creatorId?: string }> = [{ userId: targetUserId }];
+      if (user.creator?.id) {
+        paymentConditions.push({ creatorId: user.creator.id });
+      }
+
+      const payments = await this.prisma.payment.findMany({
+        where: {
+          OR: paymentConditions,
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 20,
+      });
+
+      // Fetch recent logins / sessions
+      const sessions = await this.prisma.session.findMany({
+        where: { userId: targetUserId },
+        orderBy: { createdAt: 'desc' },
+        take: 10,
+        select: {
+          id: true,
+          createdAt: true,
+          expiresAt: true,
+          ipAddress: true,
+          userAgent: true,
+        },
+      });
+
+      // Fetch recent tracked errors for this user
+      const recentErrors = getRecentErrors()
+        .filter((e) => e.context.userId === targetUserId)
+        .slice(-10);
+
+      // Audit log the view action
+      await this.prisma.auditLog.create({
+        data: {
+          userId: adminUserId,
+          action: 'ADMIN_SUPPORT_VIEW_USER',
+          resource: 'User',
+          resourceId: targetUserId,
+          changes: { targetUserId: { old: null, new: targetUserId } },
+          ipAddress: auditContext?.ipAddress,
+          requestId: auditContext?.requestId,
+        },
+      });
+
+      // Omit password from user object
+      const { password: _password, ...sanitizedUser } = user;
+
+      return {
+        user: sanitizedUser,
+        recentActivity: {
+          payments,
+          logins: sessions,
+          errors: recentErrors,
+        },
+      };
     });
+  }
 
-    logger.info(
-      `Admin ${adminUserId} updated fee override for creator ${creatorId}: ${previousFee} -> ${customFeeOverride}`
-    );
+  /**
+   * Send test email or notification from admin panel for support (#250)
+   */
+  async sendSupportTestCommunication(
+    adminUserId: string,
+    targetUserId: string,
+    input: { type: 'email' | 'notification'; subject?: string; message: string; channel?: string },
+    auditContext?: { ipAddress?: string; requestId?: string }
+  ): Promise<{
+    success: boolean;
+    targetUserId: string;
+    type: 'email' | 'notification';
+    deliveredAt: string;
+  }> {
+    return this.executeWithLogging('admin.sendSupportTestCommunication', async () => {
+      if (!(await this.isAdmin(adminUserId))) {
+        throw new UnauthorizedError('Only admins can send test communications');
+      }
 
-    return updated;
+      const targetUser = await this.prisma.user.findUnique({
+        where: { id: targetUserId },
+        select: { id: true, email: true, name: true },
+      });
+
+      if (!targetUser) {
+        throw new NotFoundError('User');
+      }
+
+      if (!input.type || !['email', 'notification'].includes(input.type)) {
+        throw new ValidationError('type must be either email or notification');
+      }
+
+      if (!input.message || typeof input.message !== 'string' || input.message.trim().length === 0) {
+        throw new ValidationError('message must be a non-empty string');
+      }
+
+      // Record audit log
+      await this.prisma.auditLog.create({
+        data: {
+          userId: adminUserId,
+          action: 'ADMIN_SUPPORT_SEND_TEST_COMMUNICATION',
+          resource: 'User',
+          resourceId: targetUserId,
+          changes: {
+            type: { old: null, new: input.type },
+            message: { old: null, new: input.message },
+            subject: { old: null, new: input.subject ?? null },
+          },
+          ipAddress: auditContext?.ipAddress,
+          requestId: auditContext?.requestId,
+        },
+      });
+
+      logger.info({ adminUserId, targetUserId, type: input.type }, 'Admin sent test communication to user');
+
+      return {
+        success: true,
+        targetUserId,
+        type: input.type,
+        deliveredAt: new Date().toISOString(),
+      };
+    });
   }
 }

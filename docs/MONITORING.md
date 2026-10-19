@@ -27,6 +27,11 @@ metrics. App histogram data provides request rate, 5xx rate, p95/p99 HTTP
 latency, and Prisma/pool query latency. Do not expose exporter ports publicly;
 restrict Prometheus, Grafana, and Alertmanager to the operations network.
 
+The endpoints the platform probes — `/health`, `/readiness` and `/metrics` —
+are rate-limit exempt (see [RATE_LIMITING.md](./RATE_LIMITING.md)). A scrape
+or a probe that received a `429` would raise a false "backend unavailable"
+alert, and Kubernetes would restart the pod on a throttled liveness probe.
+
 The Compose defaults are local-development placeholders, not production
 credentials or working alert destinations. Set `ALERTMANAGER_SLACK_WEBHOOK_URL`
 and `PAGERDUTY_ROUTING_KEY` to real values in an untracked `.env` or secret

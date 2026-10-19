@@ -58,13 +58,49 @@ export const RATE_LIMIT_POLICIES: Record<string, RateLimitPolicy> = {
 };
 
 /**
+ * Paths of the endpoints the platform probes.
+ *
+ * These are the paths the deployment actually calls: the Kubernetes
+ * liveness/readiness probes (infra/kubernetes/rollout.yaml), the Prometheus
+ * scrape target (infra/kubernetes/servicemonitor.yaml,
+ * infra/monitoring/prometheus.yml), the Docker healthcheck and the Kong
+ * gateway health route (infra/gateway/kong.yml).
+ *
+ * They live here, next to the exemption list, so the path a route is
+ * *registered* under and the path that is *exempt* cannot drift apart: a
+ * route registered under a different path silently falls back to the default
+ * class and starts consuming the quota of the monitoring traffic.
+ */
+export const MONITORING_PATHS = {
+  /** Liveness probe. */
+  health: '/health',
+  /** Readiness probe. */
+  readiness: '/readiness',
+  /** Prometheus scrape target. */
+  metrics: '/metrics',
+  /** Metrics as JSON, for dashboards that do not scrape Prometheus. */
+  metricsJson: '/metrics/json',
+} as const;
+
+/**
  * Routes that bypass rate limiting entirely (no hook is attached to them).
- * Orchestrator probes must never be throttled, and CORS preflights already
- * have their own limiter in plugins/security.ts.
+ *
+ * Orchestrator probes must never be throttled: a load balancer that gets a 429
+ * from a health check can take the instance out of rotation, and Prometheus
+ * that gets a 429 from a scrape raises a false "backend unavailable" alert.
+ * Monitoring traffic must also never eat the quota of legitimate user
+ * requests, so these endpoints are skipped instead of counted.
+ *
+ * CORS preflights already have their own limiter in plugins/security.ts.
  */
 export const RATE_LIMIT_EXEMPTIONS: RouteMatcher[] = [
-  { method: 'GET', url: '/health' },
-  { method: 'GET', url: '/readiness' },
+  // Liveness and readiness probes (Kubernetes, Docker Compose, the API
+  // gateway's healthcheck paths).
+  { method: 'GET', url: MONITORING_PATHS.health },
+  { method: 'GET', url: MONITORING_PATHS.readiness },
+  // Prometheus scrape target and its JSON alternative.
+  { method: 'GET', url: MONITORING_PATHS.metrics },
+  { method: 'GET', url: MONITORING_PATHS.metricsJson },
   { method: 'OPTIONS', url: '*' },
 ];
 

@@ -43,6 +43,17 @@ export class CreatorService extends BaseService {
     super();
   }
 
+  private formatCreatorProfile(creator: any): any {
+    if (!creator) return creator;
+    const isVerified = Boolean(creator.verified);
+    return {
+      ...creator,
+      verified: isVerified,
+      verificationBadge: isVerified,
+      badge: isVerified ? { verified: true, type: 'verified' } : null,
+    };
+  }
+
   async createCreator(
     userId: string,
     data: CreateCreatorRequest
@@ -101,7 +112,7 @@ export class CreatorService extends BaseService {
     return this.executeWithLogging('creator.getByUsername', async () => {
       const cacheKey = createCacheKey(CacheType.CREATOR, `username:${username}`);
 
-      return getOrFetch({
+      const result = await getOrFetch({
         key: cacheKey,
         type: CacheType.CREATOR,
         fetchFn: async () => {
@@ -117,6 +128,7 @@ export class CreatorService extends BaseService {
           return creator;
         },
       });
+      return this.formatCreatorProfile(result);
     });
   }
 
@@ -124,7 +136,7 @@ export class CreatorService extends BaseService {
     return this.executeWithLogging('creator.getById', async () => {
       const cacheKey = createCacheKey(CacheType.CREATOR, creatorId);
 
-      return getOrFetch({
+      const result = await getOrFetch({
         key: cacheKey,
         type: CacheType.CREATOR,
         fetchFn: async () => {
@@ -140,6 +152,7 @@ export class CreatorService extends BaseService {
           return creator;
         },
       });
+      return this.formatCreatorProfile(result);
     });
   }
 
@@ -166,7 +179,7 @@ export class CreatorService extends BaseService {
       }
       await invalidateCaches(creatorCacheKeys(creatorId, creator.username), 'creator.updated');
 
-      return creator;
+      return this.formatCreatorProfile(creator);
     });
   }
 
@@ -174,7 +187,7 @@ export class CreatorService extends BaseService {
     return this.executeWithLogging('creator.getByUserId', async () => {
       const cacheKey = createCacheKey(CacheType.CREATOR, `userId:${userId}`);
 
-      return getOrFetch({
+      const result = await getOrFetch({
         key: cacheKey,
         type: CacheType.CREATOR,
         fetchFn: async () => {
@@ -190,6 +203,7 @@ export class CreatorService extends BaseService {
           return creator;
         },
       });
+      return this.formatCreatorProfile(result);
     });
   }
 
@@ -244,10 +258,11 @@ export class CreatorService extends BaseService {
       ]);
 
       const totalPages = Math.ceil(total / safePageSize);
+      const formattedCreators = creators.map((c) => this.formatCreatorProfile(c));
 
       return {
-        creators,
-        items: creators,
+        creators: formattedCreators,
+        items: formattedCreators,
         total,
         page: safePage,
         pageSize: safePageSize,

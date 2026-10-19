@@ -64,4 +64,51 @@ describe('CORS & security headers (Issue #28)', () => {
     }
     expect(limited).toBe(true);
   });
+
+  it('sets X-Content-Type-Options: nosniff on all responses (#251)', async () => {
+    const app = Fastify({ logger: false });
+    await registerSecurityPlugins(app);
+    app.get('/api/test', async () => ({ status: 'ok' }));
+    app.get('/api/error', async () => {
+      throw new Error('boom');
+    });
+    await app.ready();
+
+    const okRes = await app.inject({ method: 'GET', url: '/api/test' });
+    expect(okRes.statusCode).toBe(200);
+    expect(okRes.headers['x-content-type-options']).toBe('nosniff');
+
+    const notFoundRes = await app.inject({ method: 'GET', url: '/api/nonexistent' });
+    expect(notFoundRes.statusCode).toBe(404);
+    expect(notFoundRes.headers['x-content-type-options']).toBe('nosniff');
+
+    const errorRes = await app.inject({ method: 'GET', url: '/api/error' });
+    expect(errorRes.statusCode).toBe(500);
+    expect(errorRes.headers['x-content-type-options']).toBe('nosniff');
+  });
+
+  it('sets X-Frame-Options: DENY by default and handles allowed embedding scenarios (#252)', async () => {
+    const app = Fastify({ logger: false });
+    await registerSecurityPlugins(app);
+    app.get('/api/test', async () => ({ status: 'ok' }));
+    app.get('/embed/widget', async () => ({ embedded: true }));
+    await app.ready();
+
+    // Default response: DENY
+    const defaultRes = await app.inject({ method: 'GET', url: '/api/test' });
+    expect(defaultRes.headers['x-frame-options']).toBe('DENY');
+
+    // Allowed embedding scenario: /embed path
+    const embedRes = await app.inject({ method: 'GET', url: '/embed/widget' });
+    expect(embedRes.headers['x-frame-options']).toBe('SAMEORIGIN');
+
+    // Allowed embedding scenario: x-allow-embed header
+    const headerEmbedRes = await app.inject({
+      method: 'GET',
+      url: '/api/test',
+      headers: { 'x-allow-embed': 'true' },
+    });
+    expect(headerEmbedRes.headers['x-frame-options']).toBe('SAMEORIGIN');
+  });
 });
+

@@ -4,6 +4,7 @@ import { randomUUID } from 'crypto';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { requestIdHeaders } from './requestContext';
+import { processErrorForIncidentAlerting } from './incident-alerting';
 
 /**
  * Lightweight, dependency-conscious error tracking.
@@ -222,6 +223,10 @@ export function captureError(error: unknown, context: ErrorContext = {}): Tracke
       logger.debug({ err }, 'Error transport failed');
     });
   }
+
+  void processErrorForIncidentAlerting(tracked).catch((err) => {
+    logger.debug({ err }, 'Incident alert processing failed');
+  });
 
   return tracked;
 }

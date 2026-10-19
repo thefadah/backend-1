@@ -32,7 +32,7 @@ when it is registered, and the class decides the limit.
 | `public` | 100 requests / 60 s | `RATE_LIMIT_PUBLIC_MAX`, `RATE_LIMIT_PUBLIC_WINDOW_MS` | Unauthenticated reads (creator profiles, lookups, ...) |
 | `authenticated` | 300 requests / 60 s | `RATE_LIMIT_AUTHENTICATED_MAX`, `RATE_LIMIT_AUTHENTICATED_WINDOW_MS` | Routes guarded by `authMiddleware` / `requireAdmin` / `requireCreator` |
 | `sensitive` | 10 requests / 60 s | `RATE_LIMIT_SENSITIVE_MAX`, `RATE_LIMIT_SENSITIVE_WINDOW_MS` | Credentials, wallet signatures, money movement, expensive operations |
-| _exempt_ | no limit | none | Health/readiness probes, CORS preflight |
+| _exempt_ | no limit | none | Health/readiness probes, Prometheus scrapes, CORS preflight |
 
 Limits are counted **per client, per route**: a client that has used up its
 quota on `POST /api/v1/auth/login` can still call `GET /api/v1/creators/:id`,
@@ -91,6 +91,44 @@ Add a matcher to `RATE_LIMIT_EXEMPTIONS`:
 
 Exempt routes are skipped entirely: no counter, no rate-limit headers. Keep this
 list to endpoints that must never be throttled (orchestrator probes).
+
+The current exemptions are:
+
+| Matcher | Endpoint | Called by |
+| --- | --- | --- |
+| `GET /health` | Liveness probe | Kubernetes `livenessProbe`, Docker Compose healthcheck, API gateway |
+| `GET /readiness` | Readiness probe | Kubernetes `readinessProbe`, API gateway |
+| `GET /metrics` | Prometheus metrics | Prometheus scrape / Kubernetes `ServiceMonitor` |
+| `GET /metrics/json` | Metrics as JSON | Monitoring dashboards |
+| `OPTIONS *` | CORS preflight | Browser preflight (has its own limiter) |
+
+Monitoring endpoints are exempt for two reasons. A load balancer that receives
+a `429` from a health check can pull the instance out of rotation, and a
+Prometheus scrape that receives a `429` raises a false "backend unavailable"
+alert. Because an exempt route has no counter at all, monitoring traffic also
+never consumes the quota of a legitimate user request — the counters are
+per-route, and probe traffic is not counted against any of them.
+
+The probe paths are declared once, in `MONITORING_PATHS`
+(`src/config/rate-limit.ts`), and the exemption list is built from it. The
+routes themselves are registered with the same constant (`src/index.ts`,
+`src/routes/metrics.routes.ts`), so the path that is served and the path that
+is exempt cannot drift apart — a route registered under a different path falls
+back to the default class and starts consuming the quota of the monitoring
+traffic. `src/plugins/__tests__/rateLimit.test.ts` asserts that every path the
+deployment probes (`infra/kubernetes/rollout.yaml`,
+`infra/kubernetes/servicemonitor.yaml`, `infra/monitoring/prometheus.yml`) is
+exempt, so adding a probe to the manifests without exempting it fails the
+build.
+
+The interactive diagnostics endpoints (`/diagnostics/queries/*`) are **not**
+exempt: they are read by developers rather than scraped by the platform, they
+hit the database on every call, and `POST /diagnostics/queries/explain` is
+deliberately classified `sensitive` below.
+
+Do not exempt an endpoint that a browser or an untrusted client can reach
+unless it is cheap and safe to serve without a limit: an exemption removes the
+only protection that endpoint has against abuse.
 
 ### Add a new class
 

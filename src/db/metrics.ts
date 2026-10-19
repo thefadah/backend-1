@@ -54,6 +54,12 @@ export const dbQueryErrorsCounter = new Counter({
   labelNames: ['error_code'],
 });
 
+export const dbDeadlocksCounter = new Counter({
+  name: 'dorisio_db_deadlocks_total',
+  help: 'Total count of detected database transaction deadlocks',
+  labelNames: ['operation', 'exhausted'],
+});
+
 export const dbQueryDuration = new Histogram({
   name: 'dorisio_db_query_duration_seconds_pool',
   help: 'Database query execution duration in seconds via connection pool',

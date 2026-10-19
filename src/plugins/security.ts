@@ -74,4 +74,17 @@ export async function registerSecurityPlugins(app: FastifyInstance): Promise<voi
   });
 
   app.addHook('onRequest', rateLimitCorsPreflight);
+
+  // Ensure security headers on all responses (#251, #252)
+  app.addHook('onSend', async (request, reply) => {
+    reply.header('x-content-type-options', 'nosniff');
+    const isEmbedAllowed =
+      request.url.startsWith('/embed') ||
+      request.headers['x-allow-embed'] === 'true';
+    if (isEmbedAllowed) {
+      reply.header('x-frame-options', 'SAMEORIGIN');
+    } else if (!reply.getHeader('x-frame-options')) {
+      reply.header('x-frame-options', 'DENY');
+    }
+  });
 }

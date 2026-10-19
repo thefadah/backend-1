@@ -24,6 +24,7 @@ import {
   dbConnectionLeaksCounter,
   dbQueryDuration,
   dbQueryErrorsCounter,
+  dbDeadlocksCounter,
   dbCacheHitsCounter,
   dbCacheMissesCounter,
   dbCacheSizeGauge,
@@ -480,32 +481,103 @@ export const withClient = async <T>(callback: (client: PoolClient) => Promise<T>
   }
 };
 
+export interface TransactionOptions {
+  isolationLevel?: 'READ COMMITTED' | 'REPEATABLE READ' | 'SERIALIZABLE';
+  maxRetries?: number;
+  initialBackoffMs?: number;
+  operationName?: string;
+}
+
 /**
- * Execute a transaction within a pooled client with automatic BEGIN/COMMIT/ROLLBACK.
+ * Detects PostgreSQL or Prisma transaction deadlocks and serialization failures.
+ */
+export function isDeadlockError(error: unknown): boolean {
+  if (!error) return false;
+  const code = (error as { code?: string })?.code;
+  const message = (error as { message?: string })?.message?.toLowerCase() || '';
+
+  // Postgres 40P01: deadlock_detected
+  // Postgres 40001: serialization_failure
+  // Prisma P2034: transaction failed due to write conflict or deadlock
+  // Prisma P2028: transaction API error / timeout / deadlock
+  if (code === '40P01' || code === '40001' || code === 'P2034' || code === 'P2028') {
+    return true;
+  }
+
+  if (
+    message.includes('deadlock detected') ||
+    message.includes('could not serialize access') ||
+    message.includes('deadlock')
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Execute a transaction within a pooled client with automatic BEGIN/COMMIT/ROLLBACK,
+ * deadlock detection, and automatic retry with exponential backoff.
  */
 export const withTransaction = async <T>(
   callback: (client: PoolClient) => Promise<T>,
-  isolationLevel?: 'READ COMMITTED' | 'REPEATABLE READ' | 'SERIALIZABLE'
+  isolationLevelOrOptions?: 'READ COMMITTED' | 'REPEATABLE READ' | 'SERIALIZABLE' | TransactionOptions
 ): Promise<T> => {
-  return withClient(async (client) => {
-    const beginSql = isolationLevel
-      ? `BEGIN TRANSACTION ISOLATION LEVEL ${isolationLevel}`
-      : 'BEGIN';
+  const options: TransactionOptions =
+    typeof isolationLevelOrOptions === 'string'
+      ? { isolationLevel: isolationLevelOrOptions }
+      : isolationLevelOrOptions ?? {};
 
-    await client.query(beginSql);
+  const isolationLevel = options.isolationLevel;
+  const maxRetries = options.maxRetries ?? 3;
+  const initialBackoffMs = options.initialBackoffMs ?? 50;
+  const operationName = options.operationName ?? 'db.transaction';
+
+  let attempt = 0;
+  while (true) {
     try {
-      const result = await callback(client);
-      await client.query('COMMIT');
-      return result;
+      return await withClient(async (client) => {
+        const beginSql = isolationLevel
+          ? `BEGIN TRANSACTION ISOLATION LEVEL ${isolationLevel}`
+          : 'BEGIN';
+
+        await client.query(beginSql);
+        try {
+          const result = await callback(client);
+          await client.query('COMMIT');
+          return result;
+        } catch (error) {
+          try {
+            await client.query('ROLLBACK');
+          } catch (rollbackErr) {
+            logger.error({ rollbackErr }, 'Failed to rollback transaction');
+          }
+          throw error;
+        }
+      });
     } catch (error) {
-      try {
-        await client.query('ROLLBACK');
-      } catch (rollbackErr) {
-        logger.error({ rollbackErr }, 'Failed to rollback transaction');
+      if (isDeadlockError(error)) {
+        if (attempt < maxRetries) {
+          attempt++;
+          dbDeadlocksCounter.inc({ operation: operationName, exhausted: 'false' });
+          const backoff = initialBackoffMs * Math.pow(2, attempt - 1);
+          logger.warn(
+            { err: error, attempt, maxRetries, backoffMs: backoff, operation: operationName },
+            'Database transaction deadlock detected; retrying after backoff'
+          );
+          await new Promise((resolve) => setTimeout(resolve, backoff));
+          continue;
+        }
+
+        dbDeadlocksCounter.inc({ operation: operationName, exhausted: 'true' });
+        logger.error(
+          { err: error, attempts: attempt, maxRetries, operation: operationName },
+          'Database transaction deadlock retries exhausted; transaction failed'
+        );
       }
       throw error;
     }
-  });
+  }
 };
 
 /**

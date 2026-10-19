@@ -73,6 +73,15 @@ export interface PaymentResponse {
   method: PaymentMethod;
   amount: number;
   currency: string;
+  currencyCode?: string;
+  currencySymbol?: string;
+  formattedAmount?: string;
+  exchangeRate?: number | null;
+  exchangeRateInfo?: {
+    fromCurrency: string;
+    toCurrency: string;
+    rate: number;
+  } | null;
   status: PaymentStatus;
   description: string | null;
   clientSecret?: string;
@@ -86,6 +95,15 @@ export interface RefundResponse {
   paymentId: string;
   amount: number;
   currency: string;
+  currencyCode?: string;
+  currencySymbol?: string;
+  formattedAmount?: string;
+  exchangeRate?: number | null;
+  exchangeRateInfo?: {
+    fromCurrency: string;
+    toCurrency: string;
+    rate: number;
+  } | null;
   status: string;
   reason: string | null;
   providerRef: string | null;
