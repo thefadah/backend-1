@@ -281,9 +281,36 @@ export class ReferralService extends BaseService {
       // Determine commission rate from tier
       const commissionRate =
         referral.referralCode.tier?.commissionRate ?? DEFAULT_COMMISSION_RATE;
-      const commissionAmount = Math.round(tipAmount * commissionRate * 1e8) / 1e8;
+      let commissionAmount = Math.round(tipAmount * commissionRate * 1e8) / 1e8;
 
       const referrerId = referral.referralCode.userId;
+
+      // Track first purchase / conversion and milestone bonus (issue #243)
+      let milestoneBonus = 0;
+      if (referral.status === 'pending') {
+        const priorConverted = await this.prisma.referral.count({
+          where: {
+            referralCodeId: referral.referralCodeId,
+            status: { in: ['converted', 'rewarded'] },
+          },
+        });
+        const currentMilestone = priorConverted + 1;
+        if (currentMilestone === 1) {
+          milestoneBonus = 5; // 5 XLM bonus on 1st referral conversion
+        } else if (currentMilestone === 5) {
+          milestoneBonus = 25; // 25 XLM bonus on 5th conversion
+        } else if (currentMilestone === 10) {
+          milestoneBonus = 50; // 50 XLM bonus on 10th conversion
+        }
+
+        if (milestoneBonus > 0) {
+          commissionAmount = Math.round((commissionAmount + milestoneBonus) * 1e8) / 1e8;
+          logger.info(`Milestone bonus of ${milestoneBonus} XLM awarded for referral milestone ${currentMilestone}`, {
+            referrerId,
+            referralId: referral.id,
+          });
+        }
+      }
 
       await this.prisma.$transaction([
         // Record the commission
@@ -314,6 +341,7 @@ export class ReferralService extends BaseService {
         refereeId: refereeUserId,
         amount: commissionAmount,
         rate: commissionRate,
+        milestoneBonus,
       });
     });
   }
@@ -615,6 +643,142 @@ export class ReferralService extends BaseService {
         data: { tierId },
       });
       return formatCode(updated);
+    });
+  }
+
+  /**
+   * Get referral code, share URL, and high-level stats for the current user (issue #243).
+   */
+  async getUserReferralCodeAndStats(userId: string): Promise<{
+    referralCode: string;
+    shareUrl: string;
+    stats: {
+      totalReferrals: number;
+      convertedReferrals: number;
+      pendingReferrals: number;
+      totalRewardsEarned: number;
+      pendingRewards: number;
+      paidRewards: number;
+    };
+  }> {
+    return this.executeWithLogging('referral.getUserCodeAndStats', async () => {
+      const codeResp = await this.getOrCreateReferralCode(userId);
+      const appUrl = process.env.APP_URL || 'https://doris.io';
+      const shareUrl = `${appUrl}/ref/${codeResp.code}`;
+
+      const [totalReferrals, convertedReferrals, pendingReferrals, commissions] = await Promise.all([
+        this.prisma.referral.count({ where: { referralCodeId: codeResp.id } }),
+        this.prisma.referral.count({ where: { referralCodeId: codeResp.id, status: { in: ['converted', 'rewarded'] } } }),
+        this.prisma.referral.count({ where: { referralCodeId: codeResp.id, status: 'pending' } }),
+        this.prisma.referralCommission.findMany({ where: { referrerId: userId } }),
+      ]);
+
+      let totalRewardsEarned = 0;
+      let pendingRewards = 0;
+      let paidRewards = 0;
+
+      for (const comm of commissions) {
+        totalRewardsEarned += comm.amount;
+        if (comm.status === 'pending') pendingRewards += comm.amount;
+        if (comm.status === 'paid') paidRewards += comm.amount;
+      }
+
+      return {
+        referralCode: codeResp.code,
+        shareUrl,
+        stats: {
+          totalReferrals,
+          convertedReferrals,
+          pendingReferrals,
+          totalRewardsEarned: Math.round(totalRewardsEarned * 1e7) / 1e7,
+          pendingRewards: Math.round(pendingRewards * 1e7) / 1e7,
+          paidRewards: Math.round(paidRewards * 1e7) / 1e7,
+        },
+      };
+    });
+  }
+
+  /**
+   * Get referral rewards and milestone stats for the current user (issue #243).
+   */
+  async getUserReferralStats(userId: string): Promise<{
+    totalReferrals: number;
+    convertedReferrals: number;
+    pendingReferrals: number;
+    rewardsEarned: number;
+    pendingRewards: number;
+    paidRewards: number;
+    milestoneBonuses: number;
+    nextMilestone: {
+      target: number;
+      bonusReward: number;
+      progress: string;
+    } | null;
+  }> {
+    return this.executeWithLogging('referral.getUserStats', async () => {
+      const codeRecord = await this.prisma.referralCode.findUnique({
+        where: { userId },
+      });
+
+      if (!codeRecord) {
+        return {
+          totalReferrals: 0,
+          convertedReferrals: 0,
+          pendingReferrals: 0,
+          rewardsEarned: 0,
+          pendingRewards: 0,
+          paidRewards: 0,
+          milestoneBonuses: 0,
+          nextMilestone: {
+            target: 1,
+            bonusReward: 5,
+            progress: '0/1',
+          },
+        };
+      }
+
+      const [totalReferrals, convertedReferrals, pendingReferrals, commissions] = await Promise.all([
+        this.prisma.referral.count({ where: { referralCodeId: codeRecord.id } }),
+        this.prisma.referral.count({ where: { referralCodeId: codeRecord.id, status: { in: ['converted', 'rewarded'] } } }),
+        this.prisma.referral.count({ where: { referralCodeId: codeRecord.id, status: 'pending' } }),
+        this.prisma.referralCommission.findMany({ where: { referrerId: userId } }),
+      ]);
+
+      let rewardsEarned = 0;
+      let pendingRewards = 0;
+      let paidRewards = 0;
+
+      for (const comm of commissions) {
+        rewardsEarned += comm.amount;
+        if (comm.status === 'pending') pendingRewards += comm.amount;
+        if (comm.status === 'paid') paidRewards += comm.amount;
+      }
+
+      // Calculate milestone bonus
+      let milestoneBonuses = 0;
+      if (convertedReferrals >= 1) milestoneBonuses += 5;
+      if (convertedReferrals >= 5) milestoneBonuses += 25;
+      if (convertedReferrals >= 10) milestoneBonuses += 50;
+
+      let nextMilestone: { target: number; bonusReward: number; progress: string } | null = null;
+      if (convertedReferrals < 1) {
+        nextMilestone = { target: 1, bonusReward: 5, progress: `${convertedReferrals}/1` };
+      } else if (convertedReferrals < 5) {
+        nextMilestone = { target: 5, bonusReward: 25, progress: `${convertedReferrals}/5` };
+      } else if (convertedReferrals < 10) {
+        nextMilestone = { target: 10, bonusReward: 50, progress: `${convertedReferrals}/10` };
+      }
+
+      return {
+        totalReferrals,
+        convertedReferrals,
+        pendingReferrals,
+        rewardsEarned: Math.round(rewardsEarned * 1e7) / 1e7,
+        pendingRewards: Math.round(pendingRewards * 1e7) / 1e7,
+        paidRewards: Math.round(paidRewards * 1e7) / 1e7,
+        milestoneBonuses,
+        nextMilestone,
+      };
     });
   }
 }

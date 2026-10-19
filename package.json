@@ -29,7 +29,8 @@
     "jobs:status": "tsx src/lib/jobs/cli-status.ts",
     "quality:report": "tsx scripts/quality-report.ts",
     "quality:check": "pnpm test -- --coverage && QUALITY_ENFORCE=true pnpm quality:report",
-    "verify-backup": "tsx scripts/verify-backup.ts"
+    "verify-backup": "tsx scripts/verify-backup.ts",
+    "db:check-integrity": "tsx scripts/check-referential-integrity.ts"
   },
   "dependencies": {
     "libphonenumber-js": "^1.11.0",

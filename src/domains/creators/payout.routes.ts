@@ -187,4 +187,36 @@ export const registerCreatorPayoutRoutes = (app: FastifyInstance, prisma: Prisma
       }
     }
   );
+
+  // GET /api/v1/creators/payouts/:payoutId/status - Get payout status with real-time transitions (issue #235)
+  app.get<{ Params: { payoutId: string } }>(
+    '/api/v1/creators/payouts/:payoutId/status',
+    { preHandler: authMiddleware },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const user = request.user;
+        if (!user) throw new Error('User not found in request');
+
+        const creator = await prisma.creator.findUnique({
+          where: { userId: user.userId },
+        });
+
+        if (!creator) {
+          reply.code(404).send(formatError('Creator profile not found', 'NOT_FOUND'));
+          return;
+        }
+
+        const { payoutId } = request.params as { payoutId: string };
+        const result = await payoutService.getPayoutStatus(creator.id, payoutId);
+        reply.send(formatSuccess(result));
+      } catch (error) {
+        if (error instanceof AppError) {
+          reply.code(error.statusCode).send(formatError(error.message, error.code));
+        } else {
+          throw error;
+        }
+      }
+    }
+  );
 };
+

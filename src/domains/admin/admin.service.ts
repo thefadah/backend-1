@@ -593,4 +593,60 @@ export class AdminService extends BaseService {
 
     return !!freeze;
   }
+
+  /**
+   * Set or remove custom fee percentage override for a specific creator (issue #234).
+   */
+  async setCreatorFeeOverride(
+    adminUserId: string,
+    creatorId: string,
+    customFeeOverride: number | null
+  ): Promise<{ creatorId: string; customFeeOverride: number | null }> {
+    if (!(await this.isAdmin(adminUserId))) {
+      throw new UnauthorizedError('Only admins can configure creator fee overrides');
+    }
+
+    if (customFeeOverride !== null && (customFeeOverride < 0 || customFeeOverride > 100)) {
+      throw new ValidationError('Fee override must be between 0 and 100 percent');
+    }
+
+    const creator = await (this.prisma.creator as any).findUnique({
+      where: { id: creatorId },
+      select: { id: true, customFeeOverride: true },
+    });
+
+    if (!creator) {
+      throw new NotFoundError('Creator');
+    }
+
+    const previousFee = creator.customFeeOverride;
+
+    const updated = await (this.prisma.creator as any).update({
+      where: { id: creatorId },
+      data: { customFeeOverride },
+      select: { id: true, customFeeOverride: true },
+    });
+
+    // Record audit log
+    await this.prisma.auditLog.create({
+      data: {
+        userId: adminUserId,
+        action: 'creator.fee_override_updated',
+        resource: 'Creator',
+        resourceId: creatorId,
+        changes: {
+          customFeeOverride: {
+            old: previousFee,
+            new: customFeeOverride,
+          },
+        },
+      },
+    });
+
+    logger.info(
+      `Admin ${adminUserId} updated fee override for creator ${creatorId}: ${previousFee} -> ${customFeeOverride}`
+    );
+
+    return updated;
+  }
 }

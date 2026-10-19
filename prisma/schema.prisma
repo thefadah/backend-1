@@ -34,10 +34,13 @@ model User {
   userRoles           UserRole[]
   sessions            Session[]
   passwordResetTokens PasswordResetToken[]
+  verificationTokens  VerificationToken[]
   referralCode        ReferralCode?
   referrals           Referral[]            @relation("RefereeUser")
   referralCommissions ReferralCommission[]  @relation("ReferrerUser")
   scheduledDeletions  ScheduledAccountDeletion[]
+  filedReports        Report[]              @relation("FiledReports")
+  appeals             ReportAppeal[]        @relation("ReportAppeals")
 }
 
 model TwoFactorAuth {
@@ -154,6 +157,7 @@ model Creator {
 
   totalEarnings        Float                        @default(0)
   pendingBalance       Float                        @default(0)
+  customFeeOverride    Float?
   tips                 Tip[]                        @relation("CreatorTips")
   webhooks             Webhook[]
   freezes              AccountFreeze[]
@@ -279,6 +283,7 @@ model Tip {
   updatedAt       DateTime   @updatedAt
 
   referralCommission ReferralCommission?
+  subscriptionCharges SubscriptionCharge[]
 
   @@index([creatorId, status, createdAt])
   @@index([fromUserId, createdAt])
@@ -378,6 +383,7 @@ model VerificationToken {
   email     String
   token     String   @unique
   userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
   expiresAt DateTime
   used      Boolean  @default(false)
   createdAt DateTime @default(now())
@@ -750,6 +756,9 @@ model Payout {
   retryCount   Int       @default(0)
   nextRetryAt  DateTime?
 
+  statusHistory     PayoutStatusLog[]
+  scheduledPayments ScheduledPayment[] @relation("ScheduledPaymentLastPayout")
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -761,6 +770,20 @@ model Payout {
   // Retry worker: failed payouts ordered by next retry time.
   @@index([status, nextRetryAt], map: "idx_payout_status_nextRetryAt")
   @@index([transactionHash])
+}
+
+// Payout status transitions tracking (issue #235).
+model PayoutStatusLog {
+  id         String       @id @default(cuid())
+  payoutId   String
+  payout     Payout       @relation(fields: [payoutId], references: [id], onDelete: Cascade)
+  fromStatus PayoutStatus?
+  toStatus   PayoutStatus
+  reason     String?
+  txHash     String?
+  createdAt  DateTime     @default(now())
+
+  @@index([payoutId, createdAt], map: "idx_payoutStatusLog_payout_createdAt")
 }
 
 // Media attached to tip messages (#64). The row exists before the bytes do (it is
@@ -1115,6 +1138,7 @@ model SubscriptionCharge {
   status         ChargeStatus @default(PENDING)
   attempt        Int          @default(1)
   tipId          String?
+  tip            Tip?         @relation(fields: [tipId], references: [id], onDelete: SetNull)
   failureReason  String?
   createdAt      DateTime     @default(now())
 
@@ -1127,6 +1151,7 @@ model SubscriptionCharge {
 model Report {
   id         String @id @default(cuid())
   reporterId String
+  reporter   User   @relation("FiledReports", fields: [reporterId], references: [id], onDelete: Cascade)
 
   targetType String // tip, user, creator
   targetId   String
@@ -1174,6 +1199,7 @@ model ReportAppeal {
   report   Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
 
   appellantId String
+  appellant   User   @relation("ReportAppeals", fields: [appellantId], references: [id], onDelete: Cascade)
   message     String
   status      String    @default("pending") // pending, accepted, rejected
   notes       String?
@@ -1276,6 +1302,7 @@ model ScheduledPayment {
 
   lastRunAt    DateTime?
   lastPayoutId String?
+  lastPayout   Payout?   @relation("ScheduledPaymentLastPayout", fields: [lastPayoutId], references: [id], onDelete: SetNull)
   lastRunError String?
 
   createdAt DateTime @default(now())

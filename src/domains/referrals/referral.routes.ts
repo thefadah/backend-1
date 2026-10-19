@@ -10,6 +10,43 @@ import { CreateTierRequest, UpdateTierRequest } from './referral.types';
 export const registerReferralRoutes = (app: FastifyInstance, prisma: PrismaClient): void => {
   const referralService = new ReferralService(prisma);
 
+  // ── Referral me & stats (issue #243) ───────────────────────────────────
+  // GET /api/referrals/me and GET /api/v1/referrals/me
+  const handleReferralsMe = async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = request.user!;
+      const data = await referralService.getUserReferralCodeAndStats(user.userId);
+      reply.send(formatSuccess(data));
+    } catch (error) {
+      if (error instanceof AppError) {
+        reply.code(error.statusCode).send(formatError(error.message, error.code));
+      } else {
+        throw error;
+      }
+    }
+  };
+
+  app.get('/api/referrals/me', { preHandler: authMiddleware }, handleReferralsMe);
+  app.get('/api/v1/referrals/me', { preHandler: authMiddleware }, handleReferralsMe);
+
+  // GET /api/referrals/stats and GET /api/v1/referrals/stats
+  const handleReferralsStats = async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = request.user!;
+      const stats = await referralService.getUserReferralStats(user.userId);
+      reply.send(formatSuccess(stats));
+    } catch (error) {
+      if (error instanceof AppError) {
+        reply.code(error.statusCode).send(formatError(error.message, error.code));
+      } else {
+        throw error;
+      }
+    }
+  };
+
+  app.get('/api/referrals/stats', { preHandler: authMiddleware }, handleReferralsStats);
+  app.get('/api/v1/referrals/stats', { preHandler: authMiddleware }, handleReferralsStats);
+
   // ── Affiliate: Get or create your referral code ──────────────────────────
   // GET /api/v1/referrals/my-code
   app.get(

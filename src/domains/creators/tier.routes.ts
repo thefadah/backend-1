@@ -116,6 +116,7 @@ export const registerCreatorTierRoutes = (
       select: {
         id: true,
         totalEarnings: true,
+        customFeeOverride: true,
         _count: {
           select: {
             tips: true,
@@ -130,7 +131,8 @@ export const registerCreatorTierRoutes = (
     const progression = calculateCreatorTierProgression(
       earnings,
       followers,
-      context.subscribedTier
+      context.subscribedTier,
+      creator?.customFeeOverride
     );
 
     reply.send(

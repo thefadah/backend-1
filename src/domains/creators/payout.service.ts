@@ -57,6 +57,12 @@ export class PayoutService extends BaseService {
         );
       }
 
+      // Calculate fee override if set (issue #234)
+      const feeRate = (creator.customFeeOverride !== null && creator.customFeeOverride !== undefined)
+        ? creator.customFeeOverride / 100
+        : 0.05;
+      const feeAmount = Math.round(data.amount * feeRate * 1e7) / 1e7;
+
       // Create payout record
       const payout = await this.prisma.payout.create({
         data: {
@@ -67,6 +73,20 @@ export class PayoutService extends BaseService {
         },
       });
 
+      // Record initial status transition (issue #235)
+      try {
+        await (this.prisma as any).payoutStatusLog.create({
+          data: {
+            payoutId: payout.id,
+            fromStatus: null,
+            toStatus: 'pending',
+            reason: `Payout requested (fee rate: ${(feeRate * 100).toFixed(2)}%, fee: ${feeAmount})`,
+          },
+        });
+      } catch (err: any) {
+        logger.warn(`Failed to record initial payout status log: ${err.message}`);
+      }
+
       logger.info(`Payout request created for creator ${creatorId}: ${data.amount} to ${wallet.publicKey}`);
 
       // Queue payout for processing (in production, this would go to a worker queue)
@@ -76,6 +96,8 @@ export class PayoutService extends BaseService {
       return {
         id: payout.id,
         amount: payout.amount,
+        feeRate,
+        feeAmount,
         status: payout.status,
         walletAddress: payout.walletAddress,
       };
@@ -109,6 +131,19 @@ export class PayoutService extends BaseService {
         where: { id: payoutId },
         data: { status: 'processing' as any },
       });
+
+      try {
+        await (this.prisma as any).payoutStatusLog.create({
+          data: {
+            payoutId,
+            fromStatus: 'pending',
+            toStatus: 'processing',
+            reason: 'Executing on-chain transaction',
+          },
+        });
+      } catch (err: any) {
+        logger.warn(`Failed to record processing status log: ${err.message}`);
+      }
 
       try {
         const stellarClient = getStellarClient();
@@ -161,6 +196,20 @@ export class PayoutService extends BaseService {
           },
         });
 
+        try {
+          await (this.prisma as any).payoutStatusLog.create({
+            data: {
+              payoutId,
+              fromStatus: 'processing',
+              toStatus: 'completed',
+              reason: 'Confirmed on-chain',
+              txHash: result.id,
+            },
+          });
+        } catch (err: any) {
+          logger.warn(`Failed to record completed status log: ${err.message}`);
+        }
+
         // Decrement creator's pending balance
         await this.prisma.creator.update({
           where: { id: payout.creatorId },
@@ -195,6 +244,19 @@ export class PayoutService extends BaseService {
             nextRetryAt: this.calculateNextRetry(payout.retryCount + 1),
           },
         });
+
+        try {
+          await (this.prisma as any).payoutStatusLog.create({
+            data: {
+              payoutId,
+              fromStatus: 'processing',
+              toStatus: 'failed',
+              reason: error.message || 'Unknown error',
+            },
+          });
+        } catch (err: any) {
+          logger.warn(`Failed to record failed status log: ${err.message}`);
+        }
 
         throw error;
       }
@@ -282,17 +344,22 @@ export class PayoutService extends BaseService {
   }
 
   /**
-   * Get payout history for a creator
+   * Get payout history for a creator with status transition tracking (issue #235)
    */
   async getPayoutHistory(creatorId: string, limit = 20): Promise<any[]> {
     return this.executeWithLogging('payout.getHistory', async () => {
-      const payouts = await this.prisma.payout.findMany({
+      const payouts = await (this.prisma.payout as any).findMany({
         where: { creatorId },
+        include: {
+          statusHistory: {
+            orderBy: { createdAt: 'asc' },
+          },
+        },
         orderBy: { createdAt: 'desc' },
         take: limit,
       });
 
-      return payouts.map((payout) => ({
+      return payouts.map((payout: any) => ({
         id: payout.id,
         amount: payout.amount,
         status: payout.status,
@@ -300,7 +367,54 @@ export class PayoutService extends BaseService {
         walletAddress: payout.walletAddress,
         createdAt: payout.createdAt.toISOString(),
         errorMessage: payout.errorMessage,
+        statusHistory: (payout.statusHistory || []).map((log: any) => ({
+          id: log.id,
+          fromStatus: log.fromStatus,
+          toStatus: log.toStatus,
+          reason: log.reason,
+          txHash: log.txHash,
+          timestamp: log.createdAt.toISOString(),
+        })),
       }));
+    });
+  }
+
+  /**
+   * Get real-time payout status and transition history (issue #235)
+   */
+  async getPayoutStatus(creatorId: string, payoutId: string): Promise<any> {
+    return this.executeWithLogging('payout.getStatus', async () => {
+      const payout = await (this.prisma.payout as any).findFirst({
+        where: { id: payoutId, creatorId },
+        include: {
+          statusHistory: {
+            orderBy: { createdAt: 'asc' },
+          },
+        },
+      });
+
+      if (!payout) {
+        throw new NotFoundError('Payout');
+      }
+
+      return {
+        id: payout.id,
+        amount: payout.amount,
+        status: payout.status,
+        transactionHash: payout.transactionHash,
+        walletAddress: payout.walletAddress,
+        errorMessage: payout.errorMessage,
+        createdAt: payout.createdAt.toISOString(),
+        updatedAt: payout.updatedAt.toISOString(),
+        statusHistory: (payout.statusHistory || []).map((log: any) => ({
+          id: log.id,
+          fromStatus: log.fromStatus,
+          toStatus: log.toStatus,
+          reason: log.reason,
+          txHash: log.txHash,
+          timestamp: log.createdAt.toISOString(),
+        })),
+      };
     });
   }
 

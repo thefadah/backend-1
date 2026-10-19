@@ -788,4 +788,32 @@ const registerReconciliationRoutes = (prefix: string) => {
       }
     }
   );
+
+  // PUT /api/v1/admin/creators/:creatorId/fee-override - Set custom fee override for a creator (issue #234)
+  app.put<{
+    Params: { creatorId: string };
+    Body: { customFeeOverride?: number | null; feePercentage?: number | null };
+  }>(
+    '/api/v1/admin/creators/:creatorId/fee-override',
+    { preHandler: requireAdmin },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const user = request.user;
+        if (!user) throw new UnauthorizedError('User not found');
+
+        const { creatorId } = request.params as { creatorId: string };
+        const body = (request.body || {}) as { customFeeOverride?: number | null; feePercentage?: number | null };
+        const fee = body.customFeeOverride !== undefined ? body.customFeeOverride : (body.feePercentage !== undefined ? body.feePercentage : null);
+
+        const result = await adminService.setCreatorFeeOverride(user.userId, creatorId, fee);
+        return reply.send(formatSuccess(result));
+      } catch (error) {
+        if (error instanceof AppError) {
+          return reply.code(error.statusCode).send(formatError(error.message, error.code));
+        }
+        throw error;
+      }
+    }
+  );
 };
+

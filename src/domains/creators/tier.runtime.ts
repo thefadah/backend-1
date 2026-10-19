@@ -149,7 +149,8 @@ const TIER_ORDER: Record<string, number> = {
 export function calculateCreatorTierProgression(
   rawEarnings: number,
   rawFollowers: number,
-  subscribedTier?: string
+  subscribedTier?: string,
+  customFeeOverride?: number | null
 ): CreatorTierProgression {
   const earnings = Math.max(0, Number(rawEarnings) || 0);
   const followers = Math.max(0, Number(rawFollowers) || 0);
@@ -218,10 +219,16 @@ export function calculateCreatorTierProgression(
     };
   });
 
+  const activeBenefits = { ...activeTierConfig.benefits };
+  if (customFeeOverride !== null && customFeeOverride !== undefined) {
+    activeBenefits.feeRatePercentage = customFeeOverride;
+    activeBenefits.feeRate = customFeeOverride / 100;
+  }
+
   return {
     currentTier: activeTierConfig.tier,
     tierName: activeTierConfig.name,
-    benefits: activeTierConfig.benefits,
+    benefits: activeBenefits,
     metrics: {
       totalEarnings: earnings,
       followers,
